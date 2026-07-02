@@ -5,7 +5,7 @@ from scipy.io import wavfile
 from sklearn.preprocessing import normalize
 
 
-samplerate, data = wavfile.read('data.wav')
+samplerate, data = wavfile.read('audio_samples/sine.wav')
 
 data = data.astype(np.float32) / np.max(np.abs(data))
 
