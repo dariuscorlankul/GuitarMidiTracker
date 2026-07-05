@@ -1,2 +1,5 @@
 python_code/.venv
 python_code/audio_samples
+python_code/training_set
+python_code/midi_files
+

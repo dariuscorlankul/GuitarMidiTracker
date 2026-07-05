@@ -1,8 +1,12 @@
 import torch
-from torch.utils.data import Dataset
+import numpy as np
+
+from torch.utils.data import Dataset, DataLoader
 from torch import nn
 from scipy.io import wavfile
-import numpy as np
+from sklearn.model_selection import train_test_split
+
+from dataset import GuitarDataSet
 
 
 class GuitarNN(nn.Module):
@@ -10,106 +14,69 @@ class GuitarNN(nn.Module):
         super().__init__()
         self.linear_relu_stack = nn.Sequential(
             nn.Linear(188, 100),
-            nn.ReLU(),
-            nn.Linear(100, 94)
+            nn.Tanh(),
+            nn.Linear(100, 94),
         )
     
     def forward(self, x):
         return self.linear_relu_stack(x)
 
+wav_paths = []
+label_paths = []
 
-class GuitarDataSet(Dataset):
-    def __init__(self, wav_file_paths, label_file_paths, fs=48000, num_notes=94, midi_start=21, Q=100):
-        self.wav_paths = wav_file_paths
-        self.label_paths = label_file_paths
-        self.fs = fs
-        self.num_notes = num_notes
-        self.midi_start = midi_start
+train_wavs, val_wavs, train_labels, val_labels = train_test_split(
+    wav_paths,
+    label_paths,
+    test_size=0.2,
+    random_state=42
+) 
 
-        note_frequencies = 440.0 * (2.0 ** ((np.arange(midi_start, midi_start + num_notes) - 69) / 12.0))
-        self.g_r, self.g_i = self._init_resonator_bank(note_frequencies, fs, Q)
-        
-    def _init_resonator_bank(frequencies, fs, Q=100):
-        """
-        Pre-calculates the static coefficients for the filter bank.
-        """
-        g_r = []
-        g_i = []
-        
-        for fc in frequencies:
-            theta = 2 * np.pi * fc / fs
-            # r can be customized per note to get a Constant-Q or log scale layout
-            r = np.exp(-np.pi * fc / (Q * fs)) 
-            
-            g_r.append(r * np.cos(theta))
-            g_i.append(r * np.sin(theta))
-            
-        return np.array(g_r), np.array(g_i)
+train_dataset = GuitarDataSet(train_wavs, train_labels)
+val_dataset = GuitarDataSet(val_wavs, val_labels)
 
-    def _process_audio_to_spectral(self, wav_path):
-        sample_rate, audio_data = wavfile.read(wav_path)
-
-        input_signal = audio_data.astype(np.float32) / np.max(np.abs(audio_data))
-
-
-        I_state = np.zeros(self.num_notes)
-        Q_state = np.zeros(self.num_notes)
-
-        raw_spectral_matrix = np.zeros((len(input_signal), self.num_notes))
-
-        for sample_id, sample in enumerate(input_signal):
-            I_new = sample + (self.g_r * I_state - self.g_i * Q_state)
-            Q_new = (self.g_r * Q_state + self.g_i * I_state)
-
-            raw_spectral_matrix[sample_id] = np.sqrt(I_new**2 + Q_new**2)
-
-            I_state = I_new
-            Q_state = Q_new
-
-            normalized_matrix = np.zeros_like(raw_spectral_matrix)
-
-            noise_floor = 0.05
-
-            for i, frame in enumerate(raw_spectral_matrix):
-                max_val = np.max(frame)
-                if max_val >= noise_floor:
-                    normalized_matrix[i] = frame/max_val
-
-            normalized_matrix  = (normalized_matrix * 2.0) - 1.0
-
-            return normalized_matrix
-
-    def __len__(self):
-        return len(self.wav_paths)
-
-    def __getitem__(self, id):
-        spectral_matrix = self.process_audio_to_spectral(self.wav_paths[id])
-
-        raw_labels = np.load(self.label_paths[id])
-        labels_matrix = (raw_labels * 2.0) - 1.0
-
-        num_blocks = min(len(spectral_matrix), len(labels_matrix)) - 1
-
-        file_inputs = []
-        file_targets = []
-
-        for block_id in range(num_blocks):
-            past_frame = spectral_matrix[block_id]
-            current_frame = spectral_matrix[block_id + 1]
-
-            neural_input = np.concatenate((past_frame, current_frame), axis=0)
-
-            file_inputs.append(neural_input)
-            file_targets.append(labels_matrix[block_id + 1])
-
-            return (torch.tensor(np.array(file_inputs), dtype=torch.float32),
-                    torch.tensor(np.array(file_targets), dtype=torch.float32))
-    
-
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
 
 model = GuitarNN()
 
+criteria = nn.BCEWithLogitsLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 
+def run_training():
+    epochs = 50
 
+    for epoch in range (epochs):
+        model.train()
+        running_loss = 0.0
 
+        for inputs, targets in train_loader:
+            inputs = inputs.squeeze(0)
+            targets = targets.squeeze(0)
+
+            logits = model(input)
+            loss = criteria(logits, targets)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            
+            model.eval()
+            running_val_loss = 0.0
+
+            with torch.no_grad():
+                for val_inputs, val_targets in val_loader:
+                    val_inputs = val_inputs.squeeze(0)
+                    val_targets = val_targets.squeeze(0)
+
+                    val_logits = model(val_inputs)
+                    val_loss = criteria(val_logits, val_targets)
+
+                    running_val_loss += val_loss.item()
+
+            avg_train = running_loss / len(train_loader)
+            avg_val = running_val_loss / len(val_loader)
+
+            print(f"Epoch {epoch:03d} | Train Loss: {avg_train:.4f} | Val Loss: {avg_val:.4f}")

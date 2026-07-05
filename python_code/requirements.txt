@@ -1,0 +1,7 @@
+numpy
+scipy
+torch
+scikit-learn
+midi2audio
+pretty_midi
+tqdm
